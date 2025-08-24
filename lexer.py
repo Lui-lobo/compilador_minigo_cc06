@@ -10,16 +10,16 @@ from typing import Optional, List, Tuple
 
 class TokenType(Enum):
     # especiais
-    EOF = auto()
-    ILLEGAL = auto()
+    EOF = auto()       # fim do arquivo
+    ILLEGAL = auto()   # caractere ou sequência inválida
 
     # identificadores e literais
-    IDENT = auto()
-    INT = auto()
-    FLOAT = auto()
-    STRING = auto()
+    IDENT = auto()     # identificador (variável, função, etc.)
+    INT = auto()       # literal inteiro
+    FLOAT = auto()     # literal float
+    STRING = auto()    # literal string
 
-    # palavras-chave
+    # palavras-chave reservadas
     PACKAGE = auto()
     FUNC = auto()
     VAR = auto()
@@ -35,26 +35,26 @@ class TokenType(Enum):
     STRING_TYPE = auto()
 
     # operadores
-    DEFINE = auto()   # para :=
-    ASSIGN = auto()       # =
-    PLUS = auto()         # +
-    MINUS = auto()        # -
-    ASTERISK = auto()     # *
-    SLASH = auto()        # /
-    MOD = auto()          # %
-    BANG = auto()         # !
-    LT = auto()           # <
-    GT = auto()           # >
-    EQ = auto()           # ==
-    NOT_EQ = auto()       # !=
-    LTE = auto()          # <=
-    GTE = auto()          # >=
-    AND = auto()          # &&
-    OR = auto()           # ||
-    INC = auto()          # ++
-    DEC = auto()          # --
+    DEFINE = auto()    # := declaração curta
+    ASSIGN = auto()    # =
+    PLUS = auto()      # +
+    MINUS = auto()     # -
+    ASTERISK = auto()  # *
+    SLASH = auto()     # /
+    MOD = auto()       # %
+    BANG = auto()      # !
+    LT = auto()        # <
+    GT = auto()        # >
+    EQ = auto()        # ==
+    NOT_EQ = auto()    # !=
+    LTE = auto()       # <=
+    GTE = auto()       # >=
+    AND = auto()       # &&
+    OR = auto()        # ||
+    INC = auto()       # ++
+    DEC = auto()       # --
 
-    # pontuação
+    # pontuação e delimitadores
     COMMA = auto()        # ,
     SEMICOLON = auto()    # ;
     DOT = auto()          # .
@@ -65,6 +65,7 @@ class TokenType(Enum):
     LBRACKET = auto()     # [
     RBRACKET = auto()     # ]
 
+# Mapeamento de palavras-chave para seus tokens
 KEYWORDS = {
     "package": TokenType.PACKAGE,
     "func": TokenType.FUNC,
@@ -92,6 +93,7 @@ class Token:
 # Lexer
 # ----------------------------
 
+# Tabela de escapes aceitos em strings
 _ESCAPE_SEQUENCES = {
     '"': '"',
     "\\": "\\",
@@ -100,6 +102,7 @@ _ESCAPE_SEQUENCES = {
     "r": "\r",
 }
 
+# Expressões regulares para literais numéricos e identificadores
 _FLOAT_RE = re.compile(
     r"""
     (?:
@@ -113,33 +116,44 @@ _FLOAT_RE = re.compile(
 )
 
 _INT_RE = re.compile(r"\d+")
-
 _IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 class Lexer:
+    """
+    Analisador léxico do Mini-Go.
+    Converte o código fonte em uma lista de tokens, 
+    registrando também erros léxicos encontrados.
+    """
+
     def __init__(self, source: str):
         self.src = source
         self.len = len(source)
         self.i = 0
         self.line = 1
         self.col = 1
-        self.errors: List[str] = []   # << lista de erros léxicos
+        self.errors: List[str] = []   # lista de erros léxicos
 
     def add_error(self, msg: str):
         """Registra um erro com linha e coluna atuais."""
         self.errors.append(f"[{self.line}:{self.col}] {msg}")
 
-    # utilidades básicas
+    # ----------------------------
+    # utilidades internas
+    # ----------------------------
+
     def _eof(self) -> bool:
+        """Retorna True se chegou ao fim do código."""
         return self.i >= self.len
 
     def _peek(self, k: int = 0) -> str:
+        """Olha o caractere k posições à frente (sem consumir)."""
         j = self.i + k
         if j < self.len:
             return self.src[j]
         return "\0"
 
     def _advance(self) -> str:
+        """Consome o próximo caractere, atualizando linha/coluna."""
         ch = self._peek()
         self.i += 1
         if ch == "\n":
@@ -150,28 +164,26 @@ class Lexer:
         return ch
 
     def _match(self, expected: str) -> bool:
+        """Consome o próximo caractere se corresponder ao esperado."""
         if self._peek() == expected:
             self._advance()
             return True
         return False
 
     def _skip_ws_and_comments(self):
+        """Ignora espaços em branco e comentários (// e /* ... */)."""
         while not self._eof():
             ch = self._peek()
-            # espaços e quebras
             if ch in " \t\r\n":
                 self._advance()
                 continue
-            # comentários
             if ch == "/":
-                if self._peek(1) == "/":
-                    # linha
+                if self._peek(1) == "/":  # comentário de linha
                     self._advance(); self._advance()
                     while not self._eof() and self._peek() != "\n":
                         self._advance()
                     continue
-                if self._peek(1) == "*":
-                    # bloco
+                if self._peek(1) == "*":  # comentário de bloco
                     self._advance(); self._advance()
                     while not self._eof():
                         if self._peek() == "*" and self._peek(1) == "/":
@@ -183,15 +195,21 @@ class Lexer:
             break
 
     def _token(self, t: TokenType, lex: str, line: int, col: int) -> Token:
+        """Cria um token a partir dos dados recebidos."""
         return Token(t, lex, line, col)
 
+    # ----------------------------
+    # métodos de reconhecimento
+    # ----------------------------
+
     def _string(self) -> Token:
+        """Reconhece strings entre aspas, com escapes válidos."""
         start_line, start_col = self.line, self.col
-        self._advance()  # consumir "
+        self._advance()  # consumir a aspa inicial
         buf = []
         while not self._eof():
             ch = self._advance()
-            if ch == '"':
+            if ch == '"':  # fim da string
                 return self._token(TokenType.STRING, "".join(buf), start_line, start_col)
             if ch == "\\":  # escape
                 nxt = self._advance()
@@ -200,15 +218,17 @@ class Lexer:
                 else:
                     self.add_error(f"escape inválido: \\{nxt}")
                     return self._token(TokenType.ILLEGAL, f"\\{nxt}", start_line, start_col)
-            elif ch == "\n":
+            elif ch == "\n":  # erro: string não terminada
                 self.add_error("string literal não terminada")
                 return self._token(TokenType.ILLEGAL, "unterminated string", start_line, start_col)
             else:
                 buf.append(ch)
+        # erro: terminou o arquivo sem fechar string
         self.add_error("string literal não terminada no EOF")
         return self._token(TokenType.ILLEGAL, "unterminated string", start_line, start_col)
 
     def _number(self) -> Token:
+        """Reconhece literais numéricos (float ou int)."""
         start_line, start_col = self.line, self.col
         m = _FLOAT_RE.match(self.src, self.i)
         if m:
@@ -220,11 +240,12 @@ class Lexer:
             lex = m.group(0)
             self._consume_match(lex)
             return self._token(TokenType.INT, lex, start_line, start_col)
+        # erro: número inválido
         self.add_error("número malformado")
         return self._token(TokenType.ILLEGAL, "bad number", start_line, start_col)
 
-
     def _identifier_or_keyword(self) -> Token:
+        """Reconhece identificadores e palavras-chave."""
         start_line, start_col = self.line, self.col
         m = _IDENT_RE.match(self.src, self.i)
         lex = m.group(0)
@@ -233,11 +254,19 @@ class Lexer:
         return self._token(t, lex, start_line, start_col)
 
     def _consume_match(self, lexeme: str):
-        # avança i/linha/col de acordo com um match já calculado
+        """Avança o cursor de acordo com o lexema já reconhecido."""
         for ch in lexeme:
             self._advance()
 
+    # ----------------------------
+    # principal
+    # ----------------------------
+
     def next_token(self) -> Token:
+        """
+        Retorna o próximo token do código,
+        ou ILLEGAL/EOF quando apropriado.
+        """
         self._skip_ws_and_comments()
         if self._eof():
             return self._token(TokenType.EOF, "", self.line, self.col)
@@ -249,7 +278,7 @@ class Lexer:
         if ch == '"':
             return self._string()
 
-        # números (começa com dígito ou ponto seguido de dígito)
+        # números
         if ch.isdigit() or (ch == "." and self._peek(1).isdigit()):
             return self._number()
 
@@ -257,7 +286,7 @@ class Lexer:
         if ch.isalpha() or ch == "_":
             return self._identifier_or_keyword()
 
-        # operadores compostos / simples
+        # operadores compostos de 2 caracteres
         two = ch + self._peek(1)
         if two == "==":
             self._advance(); self._advance()
@@ -283,12 +312,11 @@ class Lexer:
         if two == "--":
             self._advance(); self._advance()
             return self._token(TokenType.DEC, "--", start_line, start_col)
-        # novo caso para :=
         if two == ":=":
             self._advance(); self._advance()
             return self._token(TokenType.DEFINE, ":=", start_line, start_col)
 
-        # operadores de um char e pontuação
+        # operadores e pontuação de 1 caractere
         single_map = {
             "=": TokenType.ASSIGN,
             "+": TokenType.PLUS,
@@ -313,12 +341,13 @@ class Lexer:
             self._advance()
             return self._token(single_map[ch], ch, start_line, start_col)
 
-        # desconhecido
+        # erro: caractere inesperado
         self.add_error(f"caractere inesperado '{ch}'")
         self._advance()
         return self._token(TokenType.ILLEGAL, ch, start_line, start_col)
 
     def tokenize(self) -> List[Token]:
+        """Converte todo o código em lista de tokens até EOF."""
         tokens = []
         while True:
             tok = self.next_token()

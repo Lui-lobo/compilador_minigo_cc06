@@ -21,15 +21,27 @@ class ParseError:
 # ------------------------------------------------------------
 
 class Parser:
+    """
+    Parser do Mini-Go.
+    - Constrói a AST a partir da lista de tokens emitida pelo Lexer.
+    - Usa descida recursiva para declarações/estatements e Pratt para expressões.
+    - Acumula erros sintáticos em self.errors e tenta seguir parsing (recover).
+    """
     def __init__(self, lexer: Lexer):
         self.lexer = lexer
-        self.tokens: List[Token] = lexer.tokenize()
-        self.pos: int = 0
-        self.errors: List[ParseError] = []
+        self.tokens: List[Token] = lexer.tokenize()  # tokeniza tudo de uma vez
+        self.pos: int = 0                            # cursor na lista de tokens
+        self.errors: List[ParseError] = []           # erros sintáticos acumulados
 
     # ------------- helpers básicos -------------
 
     def _pos_of_expr(self, e):
+        """
+        Extrai (line, column) de uma expressão para mensagens de erro/posicionamento.
+        - Muitas Exprs têm .line/.column.
+        - NameExpr pode não ter: buscamos no Identifier interno.
+        - Se nada disponível, usamos o token atual.
+        """
         if hasattr(e, "line") and hasattr(e, "column"):
             return e.line, e.column
         if isinstance(e, A.NameExpr) and hasattr(e, "ident"):
@@ -38,24 +50,37 @@ class Parser:
         return tok.line, tok.column
 
     def _current(self) -> Token:
+        """Retorna o token na posição atual (sem consumir)."""
         return self.tokens[self.pos]
 
     def _peek(self, k: int = 0) -> Token:
+        """Lookahead: retorna o token pos+k (ou o último se passar do fim)."""
         i = self.pos + k
         if i >= len(self.tokens):
             return self.tokens[-1]
         return self.tokens[i]
 
     def _at(self, tt: TokenType) -> bool:
+        """True se o token atual é do tipo tt."""
         return self._current().type == tt
 
     def _match(self, *types: TokenType) -> bool:
+        """
+        Se o token atual estiver entre 'types', consome e retorna True.
+        Do contrário, não consome e retorna False.
+        """
         if self._current().type in types:
             self.pos += 1
             return True
         return False
 
     def _expect(self, tt: TokenType, msg: str) -> Token:
+        """
+        Exige que o próximo token seja do tipo 'tt'.
+        - Se for, consome e retorna.
+        - Se não for, registra erro e retorna o token atual (sem consumir).
+        Obs.: quem chama decide como se recuperar.
+        """
         tok = self._current()
         if tok.type == tt:
             self.pos += 1
@@ -65,17 +90,25 @@ class Parser:
         return tok
 
     def _error(self, tok: Token, message: str):
+        """Adiciona um erro sintático com posição do token fornecido."""
         self.errors.append(ParseError(tok.line, tok.column, message))
 
     def _synchronize(self, stop_types: List[TokenType]):
-        # avança até encontrar um token “seguro” ou EOF
+        """
+        Recuperação simples: avança até encontrar um 'marcador seguro'
+        (por exemplo, início de nova declaração) ou EOF.
+        """
         while self._current().type not in stop_types and self._current().type != TokenType.EOF:
             self.pos += 1
 
     # ------------- parsing de alto nível -------------
 
     def parse_program(self) -> Optional[A.Program]:
-        # program := "package" IDENT ";"? decl*
+        """
+        program := 'package' IDENT ';'? decl*
+        - Aceita ';' opcional depois de 'package main'.
+        - Reúne declarações de nível superior (func/var).
+        """
         if not self._match(TokenType.PACKAGE):
             self._error(self._current(), "programa deve iniciar com 'package'")
             return None
@@ -83,7 +116,7 @@ class Parser:
         name_tok = self._expect(TokenType.IDENT, "nome do pacote após 'package'")
         package = A.Identifier(name_tok.lexeme, name_tok.line, name_tok.column)
 
-        # opcionalmente aceitar ';' após "package main"
+        # ';' opcional após 'package main'
         self._match(TokenType.SEMICOLON)
 
         decls: List[A.Decl] = []
@@ -99,7 +132,7 @@ class Parser:
             elif self._at(TokenType.EOF):
                 break
             else:
-                # token inesperado em nível superior
+                # token inesperado em nível superior → tenta sincronizar
                 self._error(self._current(), "declaração esperada ('func' ou 'var')")
                 self._synchronize([TokenType.FUNC, TokenType.VAR, TokenType.EOF])
 
@@ -108,12 +141,17 @@ class Parser:
     # ------------- declarações -------------
 
     def _var_decl(self, expect_semicolon: bool) -> Optional[A.VarDecl]:
-        # varDecl := IDENT type? ('=' expr)? ';'?
+        """
+        varDecl := IDENT type? ('=' expr)? ';'?
+        - type ∈ {int, float64, bool, string}
+        - init opcional com '='
+        - 'expect_semicolon' controla se exige ';' ao final (topo/bloco)
+        """
         name_tok = self._expect(TokenType.IDENT, "identificador da variável")
         type_name: Optional[A.TypeName] = None
         init_expr: Optional[A.Expr] = None
 
-        # tipo opcional (int/float64/bool/string)
+        # tipo opcional
         if self._current().type in (
             TokenType.INT_TYPE,
             TokenType.FLOAT64_TYPE,
@@ -124,7 +162,7 @@ class Parser:
             self.pos += 1
             type_name = A.TypeName(t.lexeme, t.line, t.column)
 
-        # inicialização opcional
+        # inicialização opcional com '='
         if self._match(TokenType.ASSIGN):
             init_expr = self._expression()
 
@@ -140,7 +178,10 @@ class Parser:
         )
 
     def _func_decl(self) -> Optional[A.FuncDecl]:
-        # funcDecl := "func" IDENT "(" paramList? ")" resultType? block
+        """
+        funcDecl := 'func' IDENT '(' paramList? ')' resultType? block
+        - Retorno único opcional após ')'
+        """
         name_tok = self._expect(TokenType.IDENT, "nome da função")
         self._expect(TokenType.LPAREN, "abrir parênteses da lista de parâmetros")
 
@@ -171,7 +212,10 @@ class Parser:
         )
 
     def _param_list(self) -> List[A.Param]:
-        # paramList := (IDENT type) (',' IDENT type)*
+        """
+        paramList := (IDENT type) (',' IDENT type)*
+        - Cada parâmetro deve ter tipo explícito (subset simplificado).
+        """
         params: List[A.Param] = []
         while True:
             name_tok = self._expect(TokenType.IDENT, "nome do parâmetro")
@@ -199,6 +243,10 @@ class Parser:
     # ------------- statements -------------
 
     def _block_stmt(self) -> A.BlockStmt:
+        """
+        block := '{' stmt* '}'
+        - Consome '{', parseia statements até '}'/EOF e consome '}'.
+        """
         lbrace = self._expect(TokenType.LBRACE, "abrir bloco '{'")
         stmts: List[A.Stmt] = []
 
@@ -209,11 +257,18 @@ class Parser:
         return A.BlockStmt(stmts, lbrace.line, lbrace.column)
 
     def _statement(self) -> A.Stmt:
-        # ordem importa: checar palavras-chave primeiro
+        """
+        stmt := varDecl
+              | ifStmt
+              | forStmt
+              | 'return' expr? ';'
+              | simpleStmt ';'
+        A ordem de checagem importa (palavras-chave primeiro).
+        """
         if self._match(TokenType.VAR):
-            # var dentro de bloco
+            # var dentro de bloco (mesma gramática do topo)
             decl = self._var_decl(expect_semicolon=True)
-            return decl  # em Python, usaremos VarDecl também como Stmt
+            return decl  # VarDecl também tratado como Stmt no subset
 
         if self._match(TokenType.IF):
             return self._if_stmt()
@@ -223,16 +278,17 @@ class Parser:
 
         if self._match(TokenType.RETURN):
             stmt = self._return_stmt()
-            # o ';' é consumido por _statement() como nos demais statements
+            # Consome o ';' do return, mantendo consistência com os demais
             self._expect(TokenType.SEMICOLON, "ponto-e-vírgula após 'return'")
             return stmt
 
-        # Caso geral: simpleStmt (expr/assign/incdec) + ';'
+        # Caso geral: simpleStmt + ';'
         stmt = self._simple_stmt()
         self._expect(TokenType.SEMICOLON, "ponto-e-vírgula após statement")
         return stmt
 
     def _if_stmt(self) -> A.IfStmt:
+        """ifStmt := 'if' expr block ('else' block)?"""
         cond = self._expression()
         then_block = self._block_stmt()
         else_block = None
@@ -243,11 +299,11 @@ class Parser:
     
     def _maybe_for_init_stmt(self) -> Optional[A.Stmt]:
         """
-        Reconhece (sem consumir ';'):
-          - IDENT := expr        (VarDecl inferido)
-          - IDENT = expr         (Assign)
-          - expr                 (ExprStmt)   ex.: chamada
-        Se não for nada reconhecível, retorna None (permitindo 'for ; cond ; post').
+        Reconhece o 'init' do for (sem consumir ';'):
+          - IDENT ':=' expr  → VarDecl implícito (short var)
+          - IDENT '='  expr  → Assign (como ExprStmt)
+          - expr             → ExprStmt (ex.: chamada)
+        Retorna None se não reconhecer nada (permitindo 'for ; cond ; post').
         """
         # IDENT := expr
         if (self._current().type == TokenType.IDENT and
@@ -257,7 +313,7 @@ class Parser:
             init = self._expression()
             return A.VarDecl(
                 name=A.Identifier(name_tok.lexeme, name_tok.line, name_tok.column),
-                type_name=None,
+                type_name=None,     # tipo será inferido pelo semântico
                 init=init,
                 line=name_tok.line,
                 column=name_tok.column,
@@ -278,7 +334,7 @@ class Parser:
             )
             return A.ExprStmt(expr, name_tok.line, name_tok.column)
 
-        # tente expressão genérica como init (ex.: chamada)
+        # expressão genérica como init (ex.: chamada)
         save = self.pos
         expr = self._expression()
         if expr:
@@ -291,22 +347,22 @@ class Parser:
 
     def _for_stmt(self) -> A.ForStmt:
         """
-        Suporta:
-          - for { ... }
-          - for cond { ... }
-          - for init ; cond ; post { ... }
+        forStmt:
+          - 'for' block
+          - 'for' expr block
+          - 'for' init ';' cond? ';' post? block
         """
         init = None
         cond = None
         post = None
 
-        # Caso 'for {' → bloco infinito
+        # for { ... } → bloco infinito
         if self._at(TokenType.LBRACE):
             body = self._block_stmt()
             tok = self._peek(-1) if self.pos > 0 else self._current()
             return A.ForStmt(init, cond, post, body, tok.line, tok.column)
 
-        # Tente reconhecer 'init ; cond ; post' (init sem consumir ';' aqui)
+        # Tenta reconhecer 'init ; cond ; post'
         save_pos = self.pos
         maybe_init = self._maybe_for_init_stmt()
 
@@ -318,7 +374,7 @@ class Parser:
                 cond = self._expression()
             self._expect(TokenType.SEMICOLON, "ponto-e-vírgula após condição do for")
 
-            # post opcional
+            # post opcional (ExprStmt)
             if not self._at(TokenType.LBRACE):
                 post = self._post_stmt()
 
@@ -326,8 +382,7 @@ class Parser:
             tok = self._peek(-1) if self.pos > 0 else self._current()
             return A.ForStmt(init, cond, post, body, tok.line, tok.column)
         else:
-            # Não era a forma com dois ';' → trata como 'for cond { ... }'
-            # volta para before init e parseia uma expressão como condição
+            # Não havia dois ';' → trata como 'for cond { ... }'
             self.pos = save_pos
             if not self._at(TokenType.LBRACE):
                 cond = self._expression()
@@ -337,14 +392,17 @@ class Parser:
 
 
     def _post_stmt(self) -> A.Stmt:
-        # pós do for: qualquer expressão simples (incl. i++, i--, i = i + 1, chamada)
+        """
+        Pós do for: qualquer expressão simples que valha como statement.
+        Ex.: i++, i--, i = i + 1, chamada.
+        """
         expr = self._expression()
         return A.ExprStmt(expr, expr.line, expr.column)
 
     def _return_stmt(self) -> A.ReturnStmt:
         """
         returnStmt := 'return' expr?
-        (o ';' é consumido por _statement)
+        (o ';' é consumido por _statement())
         """
         tok = self._peek(-1) if self.pos > 0 else self._current()
 
@@ -355,6 +413,13 @@ class Parser:
         return A.ReturnStmt(expr, tok.line, tok.column)
 
     def _simple_stmt(self) -> A.Stmt:
+        """
+        simpleStmt :=
+            IDENT ':=' expr      → VarDecl (short var)
+          | IDENT '='  expr      → Assign (como ExprStmt)
+          | IDENT '++' | '--'    → IncDec (como ExprStmt)
+          | expr                 → ExprStmt
+        """
         # short var: IDENT := expr
         if (self._current().type == TokenType.IDENT and
             self._peek(1).type == TokenType.DEFINE):
@@ -400,11 +465,10 @@ class Parser:
             )
             return A.ExprStmt(expr, name_tok.line, name_tok.column)
     
-        # fallback: expressão genérica
+        # fallback: expressão genérica como statement
         expr = self._expression()
         line, col = self._pos_of_expr(expr)
         return A.ExprStmt(expr, line, col)
-
 
     # ------------- expressões (Pratt) -------------
 
@@ -421,11 +485,15 @@ class Parser:
     }
 
     def _precedence_of(self, tok: Token) -> int:
+        """Retorna a precedência do operador atual (0 se não é operador infixo)."""
         return self.PRECEDENCE.get(tok.type.name, 0)
 
     def _expression(self, min_prec: int = 1) -> A.Expr:
         """
-        expressão com climbing de precedência + pós-fixos (call e seletor).
+        Expressão com climbing de precedência.
+        - Primeiro, lê um prefixo (_prefix).
+        - Em seguida, aplica pós-fixos de maior precedência (call e seletor).
+        - Depois, consome operadores infix respeitando precedência crescente.
         """
         expr = self._prefix()
 
@@ -469,6 +537,13 @@ class Parser:
         return expr
 
     def _prefix(self) -> A.Expr:
+        """
+        Reconhece os átomos e operadores prefixados:
+        - literais (int, float, string, true, false)
+        - identificadores
+        - unários '!' e '-'
+        - parênteses para agrupar
+        """
         tok = self._current()
 
         # literais
@@ -486,7 +561,7 @@ class Parser:
         # identificador
         if self._match(TokenType.IDENT):
             ident = A.Identifier(tok.lexeme, tok.line, tok.column)
-            return A.NameExpr(ident, tok.line, tok.column)  # se você adotou a opção A
+            return A.NameExpr(ident, tok.line, tok.column)  # se NameExpr carrega posição
 
         # unários: !  -
         if self._match(TokenType.BANG):
@@ -502,7 +577,7 @@ class Parser:
             self._expect(TokenType.RPAREN, "fechar ')'")
             return expr
 
-        # erro de expressão
+        # erro: nada que forme expressão
         self._error(tok, f"expressão inesperada: {tok.type.name}")
         self.pos += 1  # evita loop
         return A.IntegerLit(0, tok.line, tok.column)
