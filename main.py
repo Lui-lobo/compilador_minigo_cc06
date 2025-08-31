@@ -103,28 +103,46 @@ def ast_to_dict(node):
 
 def main():
     ap = argparse.ArgumentParser(
-        description="Visualizador do analisador léxico/sintático (mini Go)."
+        description="Mini-Go: lexer, parser e verificações."
     )
     src = ap.add_mutually_exclusive_group(required=True)
     src.add_argument("-f", "--file", help="Caminho para arquivo .go a ser lido.")
     src.add_argument("-c", "--code", help="Código-fonte inline (string).")
 
-    ap.add_argument("--parse", action="store_true",
-                    help="Faz parsing e imprime a AST (JSON).")
-    ap.add_argument("--json", action="store_true",
-                    help="(modo lexer) Saída em JSON em vez de tabela.")
-    ap.add_argument("--no-ansi", action="store_true",
-                    help="(modo lexer) Desativa cores ANSI.")
+    # Modo AST (parser completo → imprime AST)
+    ap.add_argument(
+        "--parse",
+        action="store_true",
+        help="Faz parsing e imprime a AST (JSON)."
+    )
+    # Modo tokens (atual)
+    ap.add_argument(
+        "--json",
+        action="store_true",
+        help="(modo lexer) Saída em JSON em vez de tabela."
+    )
+    ap.add_argument(
+        "--no-ansi",
+        action="store_true",
+        help="(modo lexer) Desativa cores ANSI."
+    )
+    # 👉 Novo modo: imprime tokens e, em seguida, checa erros sintáticos
+    ap.add_argument(
+        "--check",
+        action="store_true",
+        help="Imprime os tokens e, em seguida, executa o parser reportando erros sintáticos."
+    )
+
     args = ap.parse_args()
 
-    # 1) Obter o source primeiro (independente de --parse)
+    # 1) Obter o source primeiro (independente do modo)
     if args.file:
         with open(args.file, "r", encoding="utf-8") as fh:
             source = fh.read()
     else:
         source = args.code or ""
 
-    # 2) Se --parse, roda o parser e imprime a AST
+    # 2) Modo AST (continua igual)
     if args.parse:
         p = Parser(Lexer(source))
         prog = p.parse_program()
@@ -140,13 +158,43 @@ def main():
             print("Erros sintáticos:")
             for e in p.errors:
                 print(f"  - [{e.line}:{e.column}] {e.message}")
+        else:
+            print("Não há erros sintáticos.")
 
-        # AST em JSON
+        # AST em JSON (se existir)
         if prog:
             print(json.dumps(ast_to_dict(prog), ensure_ascii=False, indent=2))
-        return  # encerra aqui no modo parse
+        return
 
-    # 3) Caso contrário, roda o lexer “visual”
+    # 3) Novo modo: --check  (lexer + relatório sintático)
+    if args.check:
+        # 3.1) Primeiro: imprimir tokens como no modo lexer
+        lx = Lexer(source)
+        tokens = lx.tokenize()
+        if args.json:
+            print_json(tokens)
+        else:
+            print_table(tokens, use_color=not args.no_ansi)
+
+        # 3.2) Reportar erros léxicos, se houver
+        if lx.errors:
+            print("\nErros léxicos encontrados:")
+            for e in lx.errors:
+                print("  -", e)
+
+        # 3.3) Em seguida: rodar o parser e relatar erros sintáticos
+        p = Parser(Lexer(source))
+        _ = p.parse_program()
+
+        if p.errors:
+            print("\nErros sintáticos:")
+            for e in p.errors:
+                print(f"  - [{e.line}:{e.column}] {e.message}")
+        else:
+            print("\nNão há erros sintáticos.")
+        return
+
+    # 4) Modo lexer “puro” (comportamento atual)
     lx = Lexer(source)
     tokens = lx.tokenize()
 
