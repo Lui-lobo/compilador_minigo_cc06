@@ -4,7 +4,7 @@ from typing import List, Tuple
 
 # Garante que a pasta raiz esteja no path para import do lexer.py
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
+# Testes com pytest
 import pytest
 from lexer import Lexer, TokenType, Token
 
