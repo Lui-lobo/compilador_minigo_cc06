@@ -78,3 +78,9 @@ python main.py -f examples/example_ap01_teste01.go
 ```bash
 python main.py -f examples/ex01.go --parse
 ```
+
+### 5. Rodar o parser (AST) junto do analisador semântico
+```bash
+python main.py  -f examples/example_ap01_teste02.go --parse --sema
+```
+

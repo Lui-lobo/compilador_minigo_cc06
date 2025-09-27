@@ -7,6 +7,8 @@ import sys
 from typing import Iterable, Dict, Any
 # Imports e libs referentes ao parser (Analisador Sintatico)
 from parser import Parser
+from semantics import SemanticAnalyzer  # novo
+from codegen import CodeGenerator
 # certo: importa o seu módulo renomeado
 import go_ast as A
 import json
@@ -103,46 +105,54 @@ def ast_to_dict(node):
 
 def main():
     ap = argparse.ArgumentParser(
-        description="Mini-Go: lexer, parser e verificações."
+        description="Mini-Go: lexer, parser, semântica e geração de código (MEPA)."
     )
     src = ap.add_mutually_exclusive_group(required=True)
     src.add_argument("-f", "--file", help="Caminho para arquivo .go a ser lido.")
     src.add_argument("-c", "--code", help="Código-fonte inline (string).")
 
-    # Modo AST (parser completo → imprime AST)
-    ap.add_argument(
-        "--parse",
-        action="store_true",
-        help="Faz parsing e imprime a AST (JSON)."
-    )
-    # Modo tokens (atual)
-    ap.add_argument(
-        "--json",
-        action="store_true",
-        help="(modo lexer) Saída em JSON em vez de tabela."
-    )
-    ap.add_argument(
-        "--no-ansi",
-        action="store_true",
-        help="(modo lexer) Desativa cores ANSI."
-    )
-    # 👉 Novo modo: imprime tokens e, em seguida, checa erros sintáticos
-    ap.add_argument(
-        "--check",
-        action="store_true",
-        help="Imprime os tokens e, em seguida, executa o parser reportando erros sintáticos."
-    )
+    # Modos
+    ap.add_argument("--parse", action="store_true", help="Faz parsing e imprime a AST (JSON).")
+    ap.add_argument("--check", action="store_true", help="Imprime tokens e depois roda o parser (erros sintáticos).")
+    ap.add_argument("--sema", action="store_true", help="(com --parse) roda análise semântica e relata erros.")
+    ap.add_argument("--codegen", action="store_true", help="(com --parse e --sema) gera e imprime código intermediário MEPA.")
+    ap.add_argument("--json", action="store_true", help="(modo lexer) Saída em JSON em vez de tabela.")
+    ap.add_argument("--no-ansi", action="store_true", help="(modo lexer) Desativa cores ANSI.")
 
     args = ap.parse_args()
 
-    # 1) Obter o source primeiro (independente do modo)
+    # 1) Fonte
     if args.file:
         with open(args.file, "r", encoding="utf-8") as fh:
             source = fh.read()
     else:
         source = args.code or ""
 
-    # 2) Modo AST (continua igual)
+    # 2) Modo --check: lexer → imprime → parser → erros sintáticos
+    if args.check:
+        lx = Lexer(source)
+        tokens = lx.tokenize()
+        if args.json:
+            print_json(tokens)
+        else:
+            print_table(tokens, use_color=not args.no_ansi)
+
+        if lx.errors:
+            print("\nErros léxicos encontrados:")
+            for e in lx.errors:
+                print("  -", e)
+
+        p = Parser(Lexer(source))
+        _ = p.parse_program()
+        if p.errors:
+            print("\nErros sintáticos:")
+            for e in p.errors:
+                print(f"  - [{e.line}:{e.column}] {e.message}")
+        else:
+            print("\nNão há erros sintáticos.")
+        return
+
+    # 3) Modo --parse: parser → (opcional sema/codegen) → AST JSON
     if args.parse:
         p = Parser(Lexer(source))
         prog = p.parse_program()
@@ -161,43 +171,35 @@ def main():
         else:
             print("Não há erros sintáticos.")
 
-        # AST em JSON (se existir)
+        # Análise semântica
+        analyzer = None
+        if prog and args.sema:
+            analyzer = SemanticAnalyzer()
+            ok = analyzer.analyze(prog)
+            if analyzer.errors:
+                print("\nErros semânticos:")
+                for e in analyzer.errors:
+                    print(f"  - [{e.line}:{e.column}] {e.message}")
+            else:
+                print("\nSemântica OK.")
+
+        # Geração de código (se pedida)
+        if prog and args.sema and args.codegen:
+            print("\nCódigo intermediário (MEPA):")
+            cg = CodeGenerator(analyzer)
+            code = cg.generate(prog)
+            for line in code:
+                print(line)
+
+        # AST em JSON
         if prog:
+            print("\nAST (JSON):")
             print(json.dumps(ast_to_dict(prog), ensure_ascii=False, indent=2))
         return
 
-    # 3) Novo modo: --check  (lexer + relatório sintático)
-    if args.check:
-        # 3.1) Primeiro: imprimir tokens como no modo lexer
-        lx = Lexer(source)
-        tokens = lx.tokenize()
-        if args.json:
-            print_json(tokens)
-        else:
-            print_table(tokens, use_color=not args.no_ansi)
-
-        # 3.2) Reportar erros léxicos, se houver
-        if lx.errors:
-            print("\nErros léxicos encontrados:")
-            for e in lx.errors:
-                print("  -", e)
-
-        # 3.3) Em seguida: rodar o parser e relatar erros sintáticos
-        p = Parser(Lexer(source))
-        _ = p.parse_program()
-
-        if p.errors:
-            print("\nErros sintáticos:")
-            for e in p.errors:
-                print(f"  - [{e.line}:{e.column}] {e.message}")
-        else:
-            print("\nNão há erros sintáticos.")
-        return
-
-    # 4) Modo lexer “puro” (comportamento atual)
+    # 4) Modo lexer “puro”
     lx = Lexer(source)
     tokens = lx.tokenize()
-
     if args.json:
         print_json(tokens)
     else:
@@ -207,6 +209,7 @@ def main():
         print("\nErros léxicos encontrados:")
         for e in lx.errors:
             print("  -", e)
+
 
 if __name__ == "__main__":
     main()
