@@ -11,3 +11,24 @@ func main() {
 
     fmt.Println(x);        // deve imprimir 10 (a variável externa)
 }
+
+/* Codigo MEPA esperado
+main: NADA
+        AMEM 1
+        CRCT 10
+        ARMZ 0
+        CRCT 1
+        DSVF L1
+        AMEM 1
+        CRCT 20
+        ARMZ 1
+        CRVL 1
+        ESCRV
+        DMEM 1
+        DSVS L2
+L1: NADA
+L2: NADA
+        CRVL 0
+        ESCRV
+        RETU
+*/

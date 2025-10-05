@@ -1,7 +1,7 @@
 # semantics.py
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Optional, Dict, List, Tuple
+from typing import Optional, Dict, List
 
 import go_ast as A
 
@@ -21,7 +21,7 @@ VOID = Type("void")
 INVALID = Type("invalid")
 
 def type_from_typename(tn: Optional[A.TypeName]) -> Type:
-    if tn is None: return VOID  # usado para "sem anotação" em locais onde não é requerido
+    if tn is None: return VOID
     n = tn.name
     if n == "int": return INT
     if n == "float64": return FLOAT
@@ -33,7 +33,6 @@ def is_numeric(t: Type) -> bool:
     return t in (INT, FLOAT)
 
 def common_numeric(l: Type, r: Type) -> Type:
-    # regra simples: int + float64 => float64
     if l == FLOAT or r == FLOAT: return FLOAT
     if l == INT and r == INT: return INT
     return INVALID
@@ -56,17 +55,24 @@ class FuncSymbol:
     decl: A.FuncDecl
 
 class Scope:
+    """Escopo léxico com encadeamento pai → filho"""
     def __init__(self, parent: Optional["Scope"]=None):
         self.parent = parent
         self.syms: Dict[str, object] = {}
+
     def define(self, name: str, sym: object) -> bool:
-        if name in self.syms: return False
+        """Retorna False se símbolo já existir neste escopo"""
+        if name in self.syms:
+            return False
         self.syms[name] = sym
         return True
+
     def lookup(self, name: str) -> Optional[object]:
+        """Procura símbolo subindo pelos escopos"""
         s: Optional[Scope] = self
         while s:
-            if name in s.syms: return s.syms[name]
+            if name in s.syms:
+                return s.syms[name]
             s = s.parent
         return None
 
@@ -91,8 +97,8 @@ class SemanticAnalyzer:
         self.scope = Scope(None)
         self.current_func: Optional[FuncSymbol] = None
 
-        # builtin simples (opcional): print(...): void
-        self.scope.define("print", FuncSymbol("print", params=[], result=VOID, decl=None))  # varargs tolerados
+        # builtin simples: print(...): void
+        self.scope.define("print", FuncSymbol("print", params=[], result=VOID, decl=None))
 
     # ---------- utils ----------
 
@@ -106,7 +112,6 @@ class SemanticAnalyzer:
         self.errors.append(SemaError(line, col, msg))
 
     def _assert_assignable(self, dst: Type, src: Type, node):
-        # regra simples: numéricas permitem int->float64; iguais são ok
         if dst == src: return
         if dst == FLOAT and src == INT: return
         self._err(node, f"tipo incompatível: não é possível atribuir {src.name} em {dst.name}")
@@ -114,14 +119,14 @@ class SemanticAnalyzer:
     # ---------- entrada ----------
 
     def analyze(self, program: A.Program) -> bool:
-        # 1) pacote/escopo global já existe; coletar declarações topo
+        # Coleta declarações de topo
         for d in program.decls:
             if isinstance(d, A.VarDecl):
                 self._declare_global_var(d)
             elif isinstance(d, A.FuncDecl):
                 self._declare_func(d)
 
-        # 2) checar corpo de funções e var inits de topo
+        # Checa corpo e inicializações
         for d in program.decls:
             if isinstance(d, A.VarDecl):
                 self._check_vardecl(d, in_block=False)
@@ -132,10 +137,7 @@ class SemanticAnalyzer:
     # ---------- declarações topo ----------
 
     def _declare_global_var(self, d: A.VarDecl):
-        # se tiver tipo, ok; se não tiver, vamos inferir depois ao checar init
-        # evitar redeclaração
         t = type_from_typename(d.type_name) if d.type_name else VOID
-        # placeholder de tipo VOID até inferir
         sym = VarSymbol(d.name.name, t, d)
         if not self.scope.define(sym.name, sym):
             self._err(d, f"variável global '{sym.name}' redeclarada")
@@ -155,25 +157,25 @@ class SemanticAnalyzer:
     # ---------- checagem de declarações ----------
 
     def _check_func(self, f: A.FuncDecl):
-        # abre escopo de função
         func_sym = self.scope.lookup(f.name.name)
         assert isinstance(func_sym, FuncSymbol)
-        prev = self.current_func
+        prev_func = self.current_func
         self.current_func = func_sym
+
+        # Novo escopo da função
         fn_scope = Scope(self.scope)
-        # params entram no escopo
         for (p, t) in zip(f.params, func_sym.params):
             if not fn_scope.define(p.name.name, VarSymbol(p.name.name, t, None)):
                 self._err(p, f"parâmetro '{p.name.name}' duplicado")
-        # corpo
+
         saved = self.scope
         self.scope = fn_scope
         self._check_block(f.body)
         self.scope = saved
-        self.current_func = prev
+        self.current_func = prev_func
 
     def _check_block(self, b: A.BlockStmt):
-        blk = Scope(self.scope)
+        blk = Scope(self.scope)  # novo escopo léxico
         saved = self.scope
         self.scope = blk
         for s in b.stmts:
@@ -185,7 +187,7 @@ class SemanticAnalyzer:
             self._check_vardecl(s, in_block=True)
             return
         if isinstance(s, A.ExprStmt):
-            self._type_of_expr(s.expr)  # só para validar
+            self._type_of_expr(s.expr)
             return
         if isinstance(s, A.ReturnStmt):
             self._check_return(s)
@@ -208,22 +210,16 @@ class SemanticAnalyzer:
             self._check_block(s.body)
             return
         if isinstance(s, A.AssignStmt):
-            # (se usarem AssignStmt diretamente)
             lt = self._type_of_expr(s.lhs)
             rt = self._type_of_expr(s.rhs)
             self._assert_assignable(lt, rt, s)
             return
-        # fallback
-        # (outros statements não esperados no subset)
-        return
 
     def _check_vardecl(self, d: A.VarDecl, in_block: bool):
-        declared = self.scope.lookup(d.name.name)
-        if in_block:
-            # no bloco, impedir sombra duplicada imediata
-            if isinstance(declared, VarSymbol) and declared.decl and declared.decl is not d and d.name.name in self.scope.syms:
-                self._err(d, f"variável '{d.name.name}' redeclarada no mesmo escopo")
-        # tipo declarado (se houver)
+        # verificação no escopo atual
+        if not self.scope.define(d.name.name, VarSymbol(d.name.name, VOID, d)):
+            self._err(d, f"variável '{d.name.name}' redeclarada no mesmo escopo")
+
         declared_type = type_from_typename(d.type_name) if d.type_name else None
         if d.init is None and declared_type is None:
             self._err(d, f"não é possível inferir tipo de '{d.name.name}' sem inicializador")
@@ -237,9 +233,9 @@ class SemanticAnalyzer:
                 vtype = declared_type
             else:
                 vtype = init_type
-        # registrar/atualizar símbolo
+
+        # Atualiza símbolo
         sym_here = VarSymbol(d.name.name, vtype or INVALID, d)
-        # se já existia placeholder global, sobrescreve no escopo atual
         self.scope.syms[d.name.name] = sym_here
 
     def _check_return(self, r: A.ReturnStmt):
@@ -268,7 +264,6 @@ class SemanticAnalyzer:
             if isinstance(sym, VarSymbol):
                 self._note_type(e, sym.type); return sym.type
             if isinstance(sym, FuncSymbol):
-                # referência a função (ex.: passar função como valor não suportado)
                 self._err(e, f"uso de nome de função '{sym.name}' como valor não suportado")
                 self._note_type(e, INVALID); return INVALID
             self._err(e, f"identificador não declarado: {e.ident.name}")
@@ -287,24 +282,20 @@ class SemanticAnalyzer:
             lt = self._type_of_expr(e.left)
             rt = self._type_of_expr(e.right)
             op = e.op
-            # aritméticos
             if op in {"+", "-", "*", "/", "%"}:
                 if not (is_numeric(lt) and is_numeric(rt)):
                     self._err(e, f"operador '{op}' requer numéricos, obtidos {lt.name} e {rt.name}")
                     self._note_type(e, INVALID); return INVALID
                 t = common_numeric(lt, rt)
                 self._note_type(e, t); return t
-            # relacionais
             if op in {"<", "<=", ">", ">="}:
                 if not (is_numeric(lt) and is_numeric(rt)):
                     self._err(e, f"comparação '{op}' requer numéricos, obtidos {lt.name} e {rt.name}")
                 self._note_type(e, BOOL); return BOOL
-            # igualdade
             if op in {"==", "!="}:
                 if lt != rt and not (lt == FLOAT and rt == INT) and not (lt == INT and rt == FLOAT):
                     self._err(e, f"igualdade entre tipos incompatíveis: {lt.name} vs {rt.name}")
                 self._note_type(e, BOOL); return BOOL
-            # lógico
             if op in {"&&", "||"}:
                 if lt != BOOL or rt != BOOL:
                     self._err(e, f"operador lógico '{op}' requer bool, obtidos {lt.name} e {rt.name}")
@@ -329,35 +320,28 @@ class SemanticAnalyzer:
             self._note_type(e, t if is_numeric(t) else INVALID); return t if is_numeric(t) else INVALID
 
         if isinstance(e, A.CallExpr):
-            # suportar chamadas a NameExpr (funções declaradas) e tolerar SelectorExpr como externo
-            callee_type = None
-            fname = None
             if isinstance(e.callee, A.NameExpr):
                 fname = e.callee.ident.name
                 sym = self.scope.lookup(fname)
                 if isinstance(sym, FuncSymbol):
                     if len(e.args) != len(sym.params) and sym.name != "print":
                         self._err(e, f"função '{sym.name}' espera {len(sym.params)} arg(s), recebeu {len(e.args)}")
-                    # checar argumentos se for print ignoramos tipos/varargs
                     for i, arg in enumerate(e.args[:len(sym.params)]):
                         at = self._type_of_expr(arg)
                         self._assert_assignable(sym.params[i], at, arg)
                     for arg in e.args[len(sym.params):]:
-                        self._type_of_expr(arg)  # ainda tipa para coletar erros internos
+                        self._type_of_expr(arg)
                     self._note_type(e, sym.result); return sym.result
                 else:
                     self._err(e, f"função não declarada: {fname}")
                     self._note_type(e, INVALID); return INVALID
             elif isinstance(e.callee, A.SelectorExpr):
-                # tolerar chamadas de pacote externo (ex.: fmt.Println) como void sem checagem de tipos
                 for arg in e.args:
                     self._type_of_expr(arg)
                 self._note_type(e, VOID); return VOID
 
         if isinstance(e, A.SelectorExpr):
-            # Sem resolução de pacotes neste subset: considere valor inválido/usado apenas como callee
             self._note_type(e, INVALID); return INVALID
 
-        # fallback
         self._note_type(e, INVALID)
         return INVALID
