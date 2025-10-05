@@ -5,10 +5,12 @@ import go_ast as A
 from semantics import VarSymbol, SemanticAnalyzer
 
 class CodeGenerator:
-    def __init__(self, analyzer: SemanticAnalyzer):
+    def __init__(self, analyzer):
         self.analyzer = analyzer
-        self.code: List[str] = []
+        self.code = []
         self._label_count = 0
+        self.locals = {}        # ← novo: mapa de variáveis locais
+        self.local_addr_count = 0  # contador de endereços locais
 
     def next_label(self) -> str:
         self._label_count += 1
@@ -37,14 +39,35 @@ class CodeGenerator:
     # -------------------------------
     # Declarações / statements
     # -------------------------------
-
     def func_decl(self, f: A.FuncDecl):
+        self.locals = {}
+        self.local_addr_count = 0
         self.emit(f"{f.name.name}: NADA")
+
+        # percorre todas as declarações locais
+        for stmt in f.body.stmts:
+            if isinstance(stmt, A.VarDecl):
+                # aloca 1 posição por variável
+                addr = self.local_addr_count
+                self.locals[stmt.name.name] = addr
+                self.emit(f"\tAMEM 1")
+
+                # inicialização (se houver)
+                if stmt.init:
+                    self.expr(stmt.init)
+                    self.emit(f"\tARMZ {addr}")
+
+                self.local_addr_count += 1
+
+        # agora processa o restante do corpo (if, expr, etc.)
         self.block(f.body)
         self.emit("\tRETU")
 
     def block(self, b: A.BlockStmt):
         for s in b.stmts:
+            # ignora VarDecls do topo do bloco, pois já inicializamos acima
+            if isinstance(s, A.VarDecl):
+                continue
             self.stmt(s)
 
     def stmt(self, s: A.Stmt):
@@ -57,8 +80,12 @@ class CodeGenerator:
             self.emit(f"\tARMZ {addr}")
             return
         if isinstance(s, A.ExprStmt):
-            self.expr(s.expr)
-            self.emit("\tNADA")  # resultado descartado
+            # Se for chamada de função externa (fmt.Println), simula saída
+            if isinstance(s.expr, A.CallExpr) and isinstance(s.expr.callee, A.SelectorExpr):
+                self.expr(s.expr.args[0])
+                self.emit("\tESCRV")  # simula fmt.Println como instrução de escrita
+            else:
+                self.expr(s.expr)
             return
         if isinstance(s, A.ReturnStmt):
             if s.value:
@@ -110,8 +137,22 @@ class CodeGenerator:
         elif isinstance(e, A.BinaryExpr):
             self.expr(e.left)
             self.expr(e.right)
-            opmap = {"+": "SOMA", "-": "SUBT", "*": "MULT", "/": "DIVI"}
-            self.emit(f"\t{opmap.get(e.op, 'NADA')}")
+            opmap = {
+                "+": "SOMA",
+                "-": "SUBT",
+                "*": "MULT",
+                "/": "DIVI",
+                ">": "CMMA",
+                "<": "CMME",
+                ">=": "CMAG",
+                "<=": "CMEG",
+                "==": "CMIG",
+                "!=": "CMDG",
+                "&&": "CONJ",
+                "||": "DISJ",
+            }
+            instr = opmap.get(e.op, "NADA")
+            self.emit(f"\t{instr}")
         elif isinstance(e, A.UnaryExpr):
             self.expr(e.right)
             if e.op == "-":
@@ -130,7 +171,14 @@ class CodeGenerator:
     # -------------------------------
 
     def lookup_addr(self, name: str) -> int:
+        # procura variável local primeiro
+        if name in self.locals:
+            return self.locals[name]
+        # procura global
         sym = self.analyzer.scope.lookup(name)
         if isinstance(sym, VarSymbol):
             return sym.addr
+        # ignora pseudo-names de bibliotecas (fmt, Println)
+        if name in ("fmt", "Println"):
+            return 0
         raise RuntimeError(f"Variável {name} não declarada")
